@@ -5,89 +5,19 @@ import cv2
 import os
 from ultralytics import YOLO
 
-# Load YOLOv8 segmentation model
-model = YOLO("best.pt")  
+# Load YOLOv8 model
+model = YOLO("best.pt")
 
-# ---------------------------
-# Image Segmentation Function
-# ---------------------------
-def segment_image(image_path):
-    img = cv2.imread(image_path)
-    if img is None:
-        raise FileNotFoundError(f"Could not read image: {image_path}")
-    results = model.predict(source=img, task="segment", conf=0.4, verbose=False)
-    annotated = results[0].plot()
-    output_path = "output_segmented_image.jpg"
-    cv2.imwrite(output_path, annotated)
-    return output_path
+# ---------------------------------
+# Global variables for video
+# ---------------------------------
+cap = None
+out = None
+fps = 30  # default fallback
 
-def run_image_segmentation():
-    img_path = entry_image.get()
-    if not os.path.isfile(img_path):
-        messagebox.showerror("Error", "Please select a valid image file.")
-        return
-
-    output = segment_image(img_path)
-
-    # Show result in GUI
-    img = Image.open(output)
-    img = img.resize((400, 400))
-    img_tk = ImageTk.PhotoImage(img)
-    label_output.config(image=img_tk)
-    label_output.image = img_tk
-    messagebox.showinfo("Done", f"Image segmentation complete!\nSaved as: {output}")
-
-# ---------------------------
-# Live Video Segmentation
-# ---------------------------
-def segment_video_live(video_path):
-    cap = cv2.VideoCapture(video_path)
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-
-    output_path = "output_segmented_video.mp4"
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
-
-    while cap.isOpened():
-        ret, frame = cap.read()
-        if not ret:
-            break
-
-        results = model.predict(source=frame, task="segment", conf=0.4, verbose=False)
-        annotated_frame = results[0].plot()
-
-        # Show in OpenCV window
-        cv2.imshow("Live Segmentation - Press 'q' to stop", annotated_frame)
-
-        out.write(annotated_frame)
-
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
-
-    cap.release()
-    out.release()
-    cv2.destroyAllWindows()
-    return output_path
-
-def run_video_segmentation():
-    vid_path = entry_video.get()
-    if not os.path.isfile(vid_path):
-        messagebox.showerror("Error", "Please select a valid video file.")
-        return
-
-    btn_video.config(state=tk.DISABLED)
-    messagebox.showinfo("Processing", "Video segmentation started.\nPress 'q' to stop early.")
-
-    output = segment_video_live(vid_path)
-
-    messagebox.showinfo("Done", f"Video segmentation complete!\nSaved as: {output}")
-    btn_video.config(state=tk.NORMAL)
-
-# ---------------------------
-# Browse Functions
-# ---------------------------
+# ---------------------------------
+# Image segmentation
+# ---------------------------------
 def browse_image():
     file_path = filedialog.askopenfilename(
         filetypes=[("Image files", "*.jpg *.jpeg *.png *.bmp *.tif *.tiff *.jfif")]
@@ -95,6 +25,36 @@ def browse_image():
     entry_image.delete(0, tk.END)
     entry_image.insert(0, file_path)
 
+def run_image_segmentation():
+    img_path = entry_image.get()
+    if not os.path.isfile(img_path):
+        messagebox.showerror("Error", "Please select a valid image file.")
+        return
+
+    img = cv2.imread(img_path)
+    if img is None:
+        messagebox.showerror("Error", "Failed to read the image.")
+        return
+
+    results = model.predict(source=img, task="segment", conf=0.4, verbose=False)
+    annotated = results[0].plot()
+
+    output_path = "output_segmented_image.jpg"
+    cv2.imwrite(output_path, annotated)
+
+    # Show in GUI
+    bgr_frame = cv2.resize(annotated, (640, 480))
+    rgb_frame = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB)
+    img_pil = Image.fromarray(rgb_frame)
+    img_tk = ImageTk.PhotoImage(img_pil)
+    label_output.config(image=img_tk)
+    label_output.image = img_tk
+
+    messagebox.showinfo("Done", f"Image segmentation complete!\nSaved as: {output_path}")
+
+# ---------------------------------
+# Video segmentation
+# ---------------------------------
 def browse_video():
     file_path = filedialog.askopenfilename(
         filetypes=[("Video files", "*.mp4 *.avi *.mov *.mkv *.webm")]
@@ -102,12 +62,74 @@ def browse_video():
     entry_video.delete(0, tk.END)
     entry_video.insert(0, file_path)
 
-# ---------------------------
+def run_video_segmentation():
+    global cap, out, fps
+
+    vid_path = entry_video.get()
+    if not os.path.isfile(vid_path):
+        messagebox.showerror("Error", "Please select a valid video file.")
+        return
+
+    cap = cv2.VideoCapture(vid_path)
+    if not cap.isOpened():
+        messagebox.showerror("Error", "Could not open video.")
+        return
+
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    out = cv2.VideoWriter("output_segmented_video.mp4", fourcc, fps, (width, height))
+
+    btn_video.config(state=tk.DISABLED)
+    messagebox.showinfo("Processing", "Video segmentation started.\nClose the window or wait for it to finish.")
+
+    process_next_frame()
+
+def process_next_frame():
+    global cap, out, fps
+
+    if cap is not None and cap.isOpened():
+        ret, frame = cap.read()
+        if ret:
+            results = model.predict(source=frame, task="segment", conf=0.4, verbose=False)
+            annotated_frame = results[0].plot()
+
+            out.write(annotated_frame)
+
+            bgr_frame = cv2.resize(annotated_frame, (640, 480))
+            rgb_frame = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB)
+            img_pil = Image.fromarray(rgb_frame)
+            img_tk = ImageTk.PhotoImage(img_pil)
+
+            label_output.config(image=img_tk)
+            label_output.image = img_tk
+
+            delay = int(1000 / fps)
+            root.after(delay, process_next_frame)
+        else:
+            finish_video_processing()
+    else:
+        finish_video_processing()
+
+def finish_video_processing():
+    global cap, out
+
+    if cap:
+        cap.release()
+    if out:
+        out.release()
+
+    messagebox.showinfo("Done", "Video segmentation complete!\nSaved as: output_segmented_video.mp4")
+    btn_video.config(state=tk.NORMAL)
+
+# ---------------------------------
 # GUI Layout
-# ---------------------------
+# ---------------------------------
 root = tk.Tk()
 root.title("YOLOv8 Segmentation GUI")
-root.geometry("800x600")
+root.geometry("900x800")
 
 # IMAGE section
 label_image = tk.Label(root, text="Image File:")
@@ -126,10 +148,10 @@ entry_video = tk.Entry(root, width=80)
 entry_video.pack()
 btn_browse_video = tk.Button(root, text="Browse Video", command=browse_video)
 btn_browse_video.pack()
-btn_video = tk.Button(root, text="Run Video Segmentation (Live View)", command=run_video_segmentation)
+btn_video = tk.Button(root, text="Run Video Segmentation (Show in GUI)", command=run_video_segmentation)
 btn_video.pack()
 
-# Output display
+# Shared output display
 label_output = tk.Label(root)
 label_output.pack()
 
